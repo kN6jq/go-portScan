@@ -50,11 +50,12 @@ func NewTcpScanner(retChan chan port.OpenIpPort, option port.ScannerOption) (ts 
 	return
 }
 
-// Scan 对指定IP和dis port进行扫描
+// Scan 对指定IP和dst port进行扫描
 func (ts *TcpScanner) Scan(ip net.IP, dst uint16) error {
 	if ts.isDone {
 		return errors.New("scanner is closed")
 	}
+
 	ts.wg.Add(1)
 	go func() {
 		defer ts.wg.Done()
@@ -62,13 +63,21 @@ func (ts *TcpScanner) Scan(ip net.IP, dst uint16) error {
 			Ip:   ip,
 			Port: dst,
 		}
+
+		// 处理错误
 		var err error
 		openIpPort, err = service.PortIdentify(ip, dst, ts.timeout)
 		if err != nil {
 			return
 		}
 
-		ts.retChan <- openIpPort
+		// 检查 channel 是否关闭，防止发送到已关闭的 channel
+		select {
+		case ts.retChan <- openIpPort:
+			// 成功发送
+		case <-time.After(time.Second): // 超时
+			// 这里可以记录日志或处理超时
+		}
 	}()
 	return nil
 }
@@ -80,6 +89,7 @@ func (ts *TcpScanner) Wait() {
 // Close chan
 func (ts *TcpScanner) Close() {
 	ts.isDone = true
+	ts.wg.Wait()
 	close(ts.retChan)
 }
 
