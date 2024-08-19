@@ -23,12 +23,13 @@ type TcpScanner struct {
 	ctx     context.Context
 	timeout time.Duration
 	isDone  bool
-	option  port.ScannerOption
+	mu      sync.Mutex // 保护 isDone 和通道关闭状态
 	wg      sync.WaitGroup
+	option  port.ScannerOption
 }
 
 // NewTcpScanner Tcp扫描器
-func NewTcpScanner(retChan chan port.OpenIpPort, option port.ScannerOption) (ts *TcpScanner, err error) {
+func NewTcpScanner(ctx context.Context, retChan chan port.OpenIpPort, option port.ScannerOption) (ts *TcpScanner, err error) {
 	// option verify
 	if option.Rate < 10 {
 		err = errors.New("rate can not set < 10")
@@ -42,7 +43,7 @@ func NewTcpScanner(retChan chan port.OpenIpPort, option port.ScannerOption) (ts 
 	ts = &TcpScanner{
 		retChan: retChan,
 		limiter: limiter.NewLimiter(limiter.Every(time.Second/time.Duration(option.Rate)), option.Rate/10),
-		ctx:     context.Background(),
+		ctx:     ctx,
 		timeout: time.Duration(option.Timeout) * time.Millisecond,
 		option:  option,
 	}
@@ -52,9 +53,12 @@ func NewTcpScanner(retChan chan port.OpenIpPort, option port.ScannerOption) (ts 
 
 // Scan 对指定IP和dst port进行扫描
 func (ts *TcpScanner) Scan(ip net.IP, dst uint16) error {
+	ts.mu.Lock()
 	if ts.isDone {
+		ts.mu.Unlock()
 		return errors.New("scanner is closed")
 	}
+	ts.mu.Unlock()
 
 	ts.wg.Add(1)
 	go func() {
@@ -71,12 +75,12 @@ func (ts *TcpScanner) Scan(ip net.IP, dst uint16) error {
 			return
 		}
 
-		// 检查 channel 是否关闭，防止发送到已关闭的 channel
 		select {
 		case ts.retChan <- openIpPort:
-			// 成功发送
 		case <-time.After(time.Second): // 超时
-			// 这里可以记录日志或处理超时
+			return
+		case <-ts.ctx.Done():
+			return
 		}
 	}()
 	return nil
@@ -86,11 +90,18 @@ func (ts *TcpScanner) Wait() {
 	ts.wg.Wait()
 }
 
-// Close chan
+// Close 关闭通道
 func (ts *TcpScanner) Close() {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	if ts.isDone {
+		return
+	}
+
 	ts.isDone = true
-	ts.wg.Wait()
 	close(ts.retChan)
+	ts.wg.Wait()
 }
 
 // WaitLimiter Waiting for the speed limit
