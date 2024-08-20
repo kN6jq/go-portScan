@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+var DefaultTcpOption = port.ScannerOption{
+	Rate:    1000,
+	Timeout: 800,
+}
+
 // TcpScanner 结构体更新
 type TcpScanner struct {
 	ports   []uint16
