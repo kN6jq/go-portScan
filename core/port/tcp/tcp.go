@@ -11,47 +11,43 @@ import (
 	"time"
 )
 
-var DefaultTcpOption = port.ScannerOption{
-	Rate:    1000,
-	Timeout: 800,
-}
-
+// TcpScanner 结构体更新
 type TcpScanner struct {
-	ports   []uint16             // 指定端口
-	retChan chan port.OpenIpPort // 返回值队列
+	ports   []uint16
+	retChan chan port.OpenIpPort
 	limiter *limiter.Limiter
 	ctx     context.Context
+	cancel  context.CancelFunc // 新增：用于取消操作的函数
 	timeout time.Duration
 	isDone  bool
-	mu      sync.Mutex // 保护 isDone 和通道关闭状态
+	mu      sync.Mutex
 	wg      sync.WaitGroup
 	option  port.ScannerOption
 }
 
-// NewTcpScanner Tcp扫描器
-func NewTcpScanner(ctx context.Context, retChan chan port.OpenIpPort, option port.ScannerOption) (ts *TcpScanner, err error) {
-	// option verify
+// NewTcpScanner 函数更新
+func NewTcpScanner(ctx context.Context, retChan chan port.OpenIpPort, option port.ScannerOption) (*TcpScanner, error) {
 	if option.Rate < 10 {
-		err = errors.New("rate can not set < 10")
-		return
+		return nil, errors.New("rate cannot be set < 10")
 	}
 	if option.Timeout <= 0 {
-		err = errors.New("timeout can not set to 0")
-		return
+		return nil, errors.New("timeout cannot be set to 0")
 	}
 
-	ts = &TcpScanner{
+	ctx, cancel := context.WithCancel(ctx)
+	ts := &TcpScanner{
 		retChan: retChan,
 		limiter: limiter.NewLimiter(limiter.Every(time.Second/time.Duration(option.Rate)), option.Rate/10),
 		ctx:     ctx,
+		cancel:  cancel,
 		timeout: time.Duration(option.Timeout) * time.Millisecond,
 		option:  option,
 	}
 
-	return
+	return ts, nil
 }
 
-// Scan 对指定IP和dst port进行扫描
+// Scan 方法更新
 func (ts *TcpScanner) Scan(ip net.IP, dst uint16) error {
 	ts.mu.Lock()
 	if ts.isDone {
@@ -68,7 +64,6 @@ func (ts *TcpScanner) Scan(ip net.IP, dst uint16) error {
 			Port: dst,
 		}
 
-		// 处理错误
 		var err error
 		openIpPort, err = service.PortIdentify(ip, dst, ts.timeout)
 		if err != nil {
@@ -77,8 +72,6 @@ func (ts *TcpScanner) Scan(ip net.IP, dst uint16) error {
 
 		select {
 		case ts.retChan <- openIpPort:
-		case <-time.After(time.Second): // 超时
-			return
 		case <-ts.ctx.Done():
 			return
 		}
@@ -86,25 +79,25 @@ func (ts *TcpScanner) Scan(ip net.IP, dst uint16) error {
 	return nil
 }
 
+// Close 方法更新
+func (ts *TcpScanner) Close() {
+	ts.mu.Lock()
+	if ts.isDone {
+		ts.mu.Unlock()
+		return
+	}
+	ts.isDone = true
+	ts.cancel() // 取消所有正在进行的操作
+	ts.mu.Unlock()
+
+	ts.wg.Wait() // 等待所有 goroutine 完成
+}
+
+// 其他方法保持不变
 func (ts *TcpScanner) Wait() {
 	ts.wg.Wait()
 }
 
-// Close 关闭通道
-func (ts *TcpScanner) Close() {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-
-	if ts.isDone {
-		return
-	}
-
-	ts.isDone = true
-	close(ts.retChan)
-	ts.wg.Wait()
-}
-
-// WaitLimiter Waiting for the speed limit
 func (ts *TcpScanner) WaitLimiter() error {
 	return ts.limiter.Wait(ts.ctx)
 }
